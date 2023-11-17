@@ -1,0 +1,275 @@
+##############################################################################
+##############################################################################
+## Identifying Fraud in Unlabeled Casino Transactions ########################
+## By: Noah Tover ############################################################
+# Load in libraries and data
+library(stats)
+library(readxl)
+library(tidyverse)
+library(plotly)
+library(benford.analysis)
+data <- read_excel("xxxxxxxxxxx")
+data <- as.data.frame(data)
+##########################
+## Clean Data ##
+str(data)
+summary(data)
+# Change Type to Factor
+data$Type <- as.factor(data$Type)
+# Ensure only two factors for type column
+levels(data$Type)
+# Check for NAs
+data[is.na(data) == TRUE]
+# Check for duplicated values
+filter(data, duplicated(data))
+# Check for unexpected size values
+filter(data, Size <= 0)
+clean_data <- filter(data, Size != 0)
+#########################################################
+# Calculate descriptive statistics of data
+# Return, Total of each transaction type, Expected Value, Win Rate, Etc..
+clean_data <- as.data.frame(clean_data)
+returns <- clean_data %>%
+  group_by(`Customer ID`, Day) %>%
+  summarize(Total_Deposit = sum(ifelse(Type == 'D', Size, 0)),
+            Total_Withdrawal = sum(ifelse(Type == 'W', Size, 0))) %>%
+  mutate(Return = (Total_Withdrawal - Total_Deposit) / Total_Deposit) %>%
+  ungroup()
+nonpercentreturns <- clean_data %>%
+  group_by(`Customer ID`, Day) %>%
+  summarize(Total_Deposit = sum(ifelse(Type == 'D', Size, 0)),
+            Total_Withdrawal = sum(ifelse(Type == 'W', Size, 0))) %>%
+  mutate(Return = (Total_Withdrawal - Total_Deposit)) %>%
+  ungroup()
+# Split data into Deposits and Withdrawals
+deposits <- clean_data %>% filter(Type == 'D')
+withdrawals <- clean_data %>% filter(Type == 'W')
+wit_summary <- withdrawals %>%
+  group_by(`Customer ID`, Day, `Employee ID`) %>%
+  summarize(Total_Withdrawal = sum(Size)) %>%
+  ungroup()
+
+employee_returns <- returns %>%
+  left_join(wit_summary %>% 
+              group_by(`Customer ID`, Day) %>% 
+              summarize(Employee_IDs_for_Withdrawals = c(`Employee ID`)),
+            by = c("Customer ID", "Day"))
+# Add the Employee IDs for deposits and withdrawals
+returns <- returns %>%
+  left_join(wit_summary %>% 
+              group_by(`Customer ID`, Day) %>% 
+              summarize(Employee_IDs_for_Withdrawals = toString(`Employee ID`)),
+            by = c("Customer ID", "Day"))
+# Add the Employee IDs for deposits and withdrawals
+nonpercentreturns <- nonpercentreturns %>%
+  left_join(wit_summary %>% 
+              group_by(`Customer ID`, Day) %>% 
+              summarize(Employee_IDs_for_Withdrawals = toString(`Employee ID`)),
+            by = c("Customer ID", "Day"))
+
+# I plan on using clustering to identify outliers. 
+# Quantify customer segments #
+# Income segments - some people may have higher average deposits as they have more money to risk
+# Dedication segments - some people spend more time in the casino, therefore making more transactions per day
+# Skill segments - some people are more skilled gamblers than others, therefore they have a higher expected return
+# Time segments - some people may go to the casino at specific times, therefore having more common pairings with certain employees
+customer_stats <- returns %>%
+  group_by(`Customer ID`) %>%
+  summarise(
+    mean_deposit = mean(log(Total_Deposit)),
+    win_rate = sum(Return > 0) / n(), 
+    net_return = sum(Return),
+    avg_pos_return = ifelse(is.na(mean(Return[Return > 0])), 0, mean(Return[Return > 0])), # Assigning if none exist
+    avg_neg_return = ifelse(is.na(mean(Return[Return <= 0])), 0, mean(Return[Return <= 0]))
+  ) %>%
+  mutate(expected_value = win_rate * avg_pos_return + abs((1 - win_rate)) * avg_neg_return) %>%
+  ungroup()
+
+deposits_per_day <- clean_data %>%
+  filter(Type == 'D') %>%
+  group_by(`Customer ID`, Day) %>%
+  summarise(deposits = n()) %>%
+  ungroup()
+
+# Now, calculate the mean deposits per day for each customer
+mean_deposits_per_customer <- deposits_per_day %>%
+  group_by(`Customer ID`) %>%
+  summarise(mean_deposits_per_day = mean(deposits)) %>%
+  ungroup()
+
+# Merge with the previous dataframe
+customer_stats <- customer_stats %>%
+  left_join(mean_deposits_per_customer, by = "Customer ID")
+#########################################################
+## Visualize distributions & outliers of all variables ##
+# This step will help me identify which statistical tests I can use #
+
+distribution_data <- list(deposits_per_day$deposits, customer_stats$expected_value, log(returns$Total_Deposit))
+names(distribution_data) <- c('Deposits/Day', 'Expected Value', 'Deposit Size')
+distribution_statistics <- lapply(names(distribution_data), function(name){
+  i <- distribution_data[[name]]
+  skewness_test <- skewness(i)
+  kurtosis_test <- kurtosis(i)
+  shapiro <- shapiro.test(unlist(i))
+  shapiro <- shapiro$p.value
+  distribution_statistics <- data.frame(variable = name, skewness = skewness_test, kurtosis = kurtosis_test, shapiro_p_value = shapiro)
+  return(distribution_statistics)
+})
+distribution_statistics <- do.call(rbind, distribution_statistics)
+distribution_plots <- lapply(names(distribution_data), function(name){
+  i <- distribution_data[[name]]
+  par(mfrow = c(2, 2))
+  hist(i, xlab = name, main = paste(name, 'Distribution', sep = " "))
+  boxplot(i, xlab = name, main = paste(name, 'BoxPlot', sep = " "))
+  qqnorm(unlist(i), main = paste(name, 'QQplot'))
+  qqline(unlist(i), col = 'red')
+}) 
+# Facet deposits and withdrawals against size
+ggplot(clean_data, aes(x = Size)) +
+  geom_histogram(binwidth = 2) +  
+  facet_wrap(~ Type) +
+  labs(title = "Distribution of Size by Type",
+       x = "Size",
+       y = "Count") +
+  theme_minimal()
+# Facet employee ID against size
+ggplot(clean_data, aes(x = Size)) +
+  geom_histogram(binwidth = 5) + 
+  facet_wrap(~ `Employee ID`, scales = "free_y") +
+  labs(title = "Distribution of Size by Employee ID",
+       x = "Size",
+       y = "Count") +
+  theme_minimal()
+# If someone has a positive expected value, they are likely cheating as the casino should have an edge
+#######################################################################
+################## Use K-Means Clustering to Analyze Outliers
+# Calculate KMeans:
+# 1. Scale data
+segment_data <- customer_stats %>%
+  select(expected_value, mean_deposit, mean_deposits_per_day)
+segment_data <- scale(segment_data)
+segment_data <- as.data.frame(segment_data)
+
+# 2. Choose optimal number of clusters
+# Initialize total within sum of squares error: wss
+wss <- 0
+set.seed(3456)
+# For 1 to 15 cluster centers
+for (i in 1:15) {
+  km.out <- kmeans(segment_data, centers = i, nstart = 600)
+  # Save total within sum of squares to wss variable
+  wss[i] <- km.out$tot.withinss
+}
+
+# Plot total within sum of squares vs. number of clusters
+plot(1:15, wss, type = "b", 
+     xlab = "Number of Clusters", 
+     ylab = "Within groups sum of squares")
+# Use optimal number of clusters for kmeans clustering 
+clusters <- kmeans(x = segment_data, centers = 3, nstart = 5000)
+
+# 3D illusion scatter plot with ggplot2
+segment_data$cluster <- as.factor(clusters$cluster)
+head(segment_data)
+#
+# Create a 3D scatter plot using plotly
+plot_ly(data = segment_data, 
+        x = ~expected_value, 
+        y = ~mean_deposit, 
+        z = ~mean_deposits_per_day, 
+        color = ~cluster, 
+        type = "scatter3d", 
+        mode = "markers",
+        marker = list(size = 5, opacity = 0.8)) %>%
+  layout(title = "3D Cluster Visualization",
+         scene = list(xaxis = list(title = "Expected Value"),
+                      yaxis = list(title = "Mean Deposit"),
+                      zaxis = list(title = "Mean Deposits Per Day")))
+
+
+###############################################################################################################
+###############################################################################################################
+## Analyze customer returns for fraud
+# Customer returns are random, and therefore should conform to benfords law.
+ben <- benford(returns$Return, number.of.digits = 1)
+plot(ben, except=c("second order", "summation", "mantissa", "abs diff", "ex summation", "Legend"), multiple = F)
+# Define the vector of suspicious values
+flag_numbers <- c(4, 7)
+
+# Filter the returns dataset based on the suspicious values
+flagged_returns <- returns %>%
+  filter(
+    # If the value is positive
+    (Return >= 0 & as.numeric(substr(Return, 1, 1)) %in% flag_numbers) | 
+    # If the value is negative
+    (Return < 0 & as.numeric(substr(Return, 2, 2)) %in% flag_numbers)
+  )
+# Find relative frequency of cases
+employee_customer_pair_freq <- flagged_returns %>%
+  group_by(Employee_IDs_for_Withdrawals, `Customer ID`) %>%
+  summarise(suspicious_pair_count = n()) %>%
+  arrange(-suspicious_pair_count)
+# Find what percentage of employee withdrawals are associated with flagged returns
+employee_wit_freq <- flagged_returns %>%
+  group_by(Employee_IDs_for_Withdrawals) %>%
+  summarise(suspicious_wit_count = n()) %>%
+  arrange(-suspicious_wit_count)
+percent_flagged <- employee_returns %>%
+  group_by(Employee_IDs_for_Withdrawals) %>%
+  summarise(total_txns = n()) %>%
+  left_join(employee_wit_freq, by = "Employee_IDs_for_Withdrawals") %>%
+  # Replace NA with 0 in case there are no suspicious counts for an employee
+  replace_na(list(suspicious_wit_count = 0)) %>%
+  mutate(percent = suspicious_wit_count / total_txns)
+percent_flagged$z_score <- scale(percent_flagged$percent)
+
+# Get all rows of returns where employee_id contains one of the employee ids within flag_rows
+# Step 1 Identify employee IDs by a threshold of how often they appear. sus_ids
+sus_ids <- percent_flagged %>%
+  filter(z_score >= 1.8 | z_score <= -1.8) # Employees commiting fraud will attempt to hide it, so they should have the least occurences
+# Step 2 Get all rows of returns with these employee IDs. sus_txns
+sus_txns <- employee_returns %>%
+  semi_join(sus_ids, by = 'Employee_IDs_for_Withdrawals')
+# Step 4 Collapse returns
+sus_txns <- sus_txns %>%
+  group_by(`Customer ID`, Day, Return) %>%
+  summarize(Employee_IDs_for_Withdrawals = paste(Employee_IDs_for_Withdrawals, collapse = ", "))
+### Identify employees with a high percentage of outlier returns ##
+# Employees manipulating returns by skimming will cause left tailed outlier returns
+# By subsetting further, we reduce false positives
+outlier_txns <- employee_returns %>%
+  group_by(Employee_IDs_for_Withdrawals) %>%
+  mutate(return_z_score = scale(Return)) %>%
+  summarize(total_txns = n(),
+            outlier_txns = sum(abs(return_z_score) >= 2)) %>%
+  mutate(outlier_percentage = (outlier_txns / total_txns) * 100)
+outlier_txns$z_score <- scale(outlier_txns$outlier_percentage)
+high_outlier_employees <- filter(outlier_txns, (z_score <= -2) | (z_score >= 2))
+# See which flagged employees have a high level of outlier returns 
+# By combining the two methods, I can identify who is contributing most to the odd distribution of the returns of interest
+supersus <- sus_ids %>%
+  filter(Employee_IDs_for_Withdrawals %in% high_outlier_employees$Employee_IDs_for_Withdrawals)
+unique(intersect_data$Employee_IDs_for_Withdrawals)
+# I will test to see if the average return processed by these employees is significantly lower than what is expected
+supersus_returns <- filter(supersus$Employee_IDs_for_Withdrawals %in% employee_returns)
+# I am using an dependent T test, as each customer was at the casino every day, meaning the returns depend on the employee processing the transaction
+t.test(supersus_returns, returns$Return, var.equal = TRUE)
+# See if expected value of customers with multiple pairs is significantly different - if employees are cooperating with customers.
+# Goal: Identify number of times each employee transacts with each customer. Divide this by the total number of transactions for each employee. 
+pairs <- employee_returns %>%
+  group_by(Employee_IDs_for_Withdrawals, `Customer ID`) %>%
+  summarise(pair_count = n()) %>%
+  ungroup() %>%
+  # Compute total transactions for each employee
+  group_by(Employee_IDs_for_Withdrawals) %>%
+  mutate(total_transactions = sum(pair_count)) %>%
+  # Calculate percentage of transactions with each customer for each employee
+  mutate(percentage = (pair_count / total_transactions) * 100) %>%
+  ungroup()
+pair_returns <- filter(pairs, percentage > 1.7) %>%
+  semi_join(x = employee_returns)
+hist(pair_returns$Return)
+pair_stats <- semi_join(customer_stats, pair_returns, by = 'Customer ID')
+# Test significance of the single pairs expected return
+# I will use a right tailed test
+pnorm(pair_stats$expected_value, mean = mean(customer_stats$expected_value), sd = sd(customer_stats$expected_value), lower_tail = FALSE)
