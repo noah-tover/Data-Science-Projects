@@ -253,7 +253,7 @@ unique(intersect_data$Employee_IDs_for_Withdrawals)
 # I will test to see if the average return processed by these employees is significantly lower than what is expected
 supersus_returns <- filter(supersus$Employee_IDs_for_Withdrawals %in% employee_returns)
 # I am using an dependent T test, as each customer was at the casino every day, meaning the returns depend on the employee processing the transaction
-t.test(supersus_returns, returns$Return, var.equal = TRUE)
+t.test(supersus_returns, returns$Return, var.equal = TRUE, alternative = 'greater')
 # See if expected value of customers with multiple pairs is significantly different - if employees are cooperating with customers.
 # Goal: Identify number of times each employee transacts with each customer. Divide this by the total number of transactions for each employee. 
 pairs <- employee_returns %>%
