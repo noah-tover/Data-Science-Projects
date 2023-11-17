@@ -1,0 +1,60 @@
+# this code details my data analysis of the survey results on an experiment i led 
+# the experiment was to discover whether people preferred solo activities or group activities more
+# we initially hypothesized that people would enjoy group activities more, as people enjoy socializing
+# we believe more testing is needed, however people may enjoy solo activities more on average
+# load libraries and data
+library(ggplot2)
+library(tidyverse)
+library(stats)
+group_data_csv <- read.csv("C:/Users/ntover/Downloads/group_data.csv")
+solo_data_csv <- read.csv("C:/Users/ntover/Downloads/solo_data.csv")
+# change colnames to simpler
+colnames(group_data_csv) <- c('Date', 'Consent', 'Enjoyment', 'Look_Forward', 'Had_Fun')
+colnames(solo_data_csv) <- c('Date', 'Consent', 'Enjoyment', 'Look_Forward', 'Had_Fun')
+# change char objects to factors
+group_data <- as.data.frame(lapply(group_data_csv[, c(3:ncol(group_data_csv))], as.factor))
+solo_data <- as.data.frame(lapply(solo_data_csv[, c(3:ncol(solo_data_csv))], as.factor))
+# count factors
+groupdata_count <- lapply(group_data, table)
+solodata_count <- lapply(solo_data, table)
+
+# combine datasets
+group_data$Type <- 'Group'
+solo_data$Type <- 'Solo'
+combined_data <- rbind(group_data, solo_data)
+
+# prep data for plotting
+long_data <- combined_data %>% 
+  gather(key = "Question", value = "Response", -Type)
+
+# create bar plot
+ggplot(long_data, aes(x = Type, fill = Response)) +
+  geom_bar(position = "dodge") +
+  facet_wrap(~ Question, scales = "free_x") +
+  labs(title = "Distribution of Survey Responses for Group vs Solo Activities",
+       x = "Activity Type",
+       y = "Count") +
+  scale_fill_brewer(palette = "Set1", name = "Response") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+###############################
+## hypothesis testing
+# i am combining the likert scaled to convert this data to numerical interval data so i can use parametric tests. the sources justify this
+levels <- c('Strongly disagree', 'Disagree', 'Neutral', 'Agree', 'Strongly agree')
+labels <- c(1:5)
+group_data_num <- lapply(group_data_csv[, c(3:ncol(group_data_csv))], factor, levels = levels, labels = labels, ordered = TRUE)
+solo_data_num <- lapply(solo_data_csv[, c(3:ncol(solo_data_csv))], factor, levels = levels, labels = labels, ordered = TRUE)
+group_data_num <- unlist(unname(lapply(group_data_num, as.numeric)))
+solo_data_num <- unlist(unname(lapply(solo_data_num, as.numeric)))
+# i am using an independent t test
+t.test(group_data_num, solo_data_num, confidence = .95)
+var.test(group_data_num, solo_data_num, conf.level = .95)
+# we can reject the null hypothesis as p < .05 for both tests
+# therefore, people enjoy group activites less than solo activities
+# there are three reasons why this may be the case
+# 1. the sample represents a population of people who tend to be socially anxious or introverted (as is seen by the proportion of neutrals and disagrees in the group compared to solo data)
+# 2. people preferred one activity over the other
+# 3. sampling error - the sample was small
+
+# source: https://www.st-andrews.ac.uk/media/ceed/students/mathssupport/Likert.pdf
+##Mangiafico, Sal. (2022). Re: What is the most suitable statistical test for ordinal data (eg. Likert scales)?. Retrieved from: https://www.researchgate.net/post/What_is_the_most_suitable_statistical_test_for_ordinal_data_eg_Likert_scales/6256ce28b559fe3810248631/citation/download. 
