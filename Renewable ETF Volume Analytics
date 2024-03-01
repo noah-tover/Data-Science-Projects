@@ -1,1 +1,12 @@
+## This is a quick project of comparing the volumes of renewable ETFs trading on U.S exchanges.
+# Define tickers - sourced from etfdb.com
+Wind <- c('FAN', 'WNDY')
+Solar <- c('TAN', 'RAYS')
+Nuclear <- c('NLR')
+Hydrogen <- c('HYDR', 'HDRO')
+tickers <- c(Wind, Solar, Nuclear, Hydrogen)
+# Download data and create an xts of volumes
+getSymbols(tickers)
+volumes <- Vo(base::Reduce(cbind, lapply(tickers, get)))
+# Calculate and plot the relative volumes
 
